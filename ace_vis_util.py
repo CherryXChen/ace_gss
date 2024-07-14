@@ -406,11 +406,11 @@ def get_point_cloud_from_network(network, data_loader, filter_depth):
     """
 
     # remove points that do not accurately reproject (but still guarantee min number of points)
-    filter_repro_error = 1 # in px
+    filter_repro_error = 2 # in px
 
     pixel_grid = get_pixel_grid(network.OUTPUT_SUBSAMPLE) # Shape: 2x5000x5000
 
-    max_pc_points = 500000
+    max_pc_points = 5000000
     avg_pc_points = int(max_pc_points / len(data_loader))
 
     pc_xyz = []
@@ -419,7 +419,7 @@ def get_point_cloud_from_network(network, data_loader, filter_depth):
     with torch.no_grad():
 
         # iterate over mapping sequence
-        for image, _, _, gt_inv_pose, K, _, _, file in data_loader:
+        for _, image, _, _, gt_inv_pose, K, _, _, file in data_loader:
 
             # predict scene coordinate
             image = image.cuda(non_blocking=True)
@@ -427,12 +427,12 @@ def get_point_cloud_from_network(network, data_loader, filter_depth):
             K = K.cuda(non_blocking=True)
 
             with autocast():
-                scene_coords = network(image)
+                scene_coordinates_B3HW, density_scene_coordinates_B3HW, rot_maps, scale_maps, opacity_maps = network(image)
 
-            B, C, H, W = scene_coords.shape
+            B, C, H, W = density_scene_coordinates_B3HW.shape
 
             # scene coordinate to camera coordinates
-            pred_scene_coords_B3HW = scene_coords.float()
+            pred_scene_coords_B3HW = density_scene_coordinates_B3HW.float()
             pred_scene_coords_B4N = to_homogeneous(pred_scene_coords_B3HW.flatten(2))
             pred_cam_coords_B3N = torch.matmul(gt_inv_pose[:, :3], pred_scene_coords_B4N)
 
@@ -453,12 +453,12 @@ def get_point_cloud_from_network(network, data_loader, filter_depth):
             sc_err_mask = reprojection_error_1N.squeeze() < filter_repro_error
 
             # see whether reprojection error filter has enough points survive
-            if sc_err_mask.sum() < avg_pc_points:
+            # if sc_err_mask.sum() < avg_pc_points:
 
-                # take minimun number of points with lowest reprojection error
-                sorted_errors, _ = torch.sort(reprojection_error_1N.squeeze())
-                relaxed_filter_repro_error = sorted_errors[min(avg_pc_points, sorted_errors.shape[0]-1)]
-                sc_err_mask = reprojection_error_1N.squeeze() < relaxed_filter_repro_error
+            #     # take minimun number of points with lowest reprojection error
+            #     sorted_errors, _ = torch.sort(reprojection_error_1N.squeeze())
+            #     relaxed_filter_repro_error = sorted_errors[min(avg_pc_points, sorted_errors.shape[0]-1)]
+            #     sc_err_mask = reprojection_error_1N.squeeze() < relaxed_filter_repro_error
 
             sc_vis_mask = torch.logical_and(sc_depth_mask, sc_err_mask)
 
@@ -478,13 +478,15 @@ def get_point_cloud_from_network(network, data_loader, filter_depth):
             nn_offset = network.OUTPUT_SUBSAMPLE//2
             rgb = rgb[nn_offset::nn_stride, nn_offset::nn_stride, :]
             # make sure the resolution fits (catch any striding mismatches)
-            rgb = resize(rgb, scene_coords.shape[2:])
+            rgb = resize(rgb, density_scene_coordinates_B3HW.shape[2:])
             rgb = torch.from_numpy(rgb).permute(2, 0, 1)
             rgb = rgb.contiguous().view(3, -1)
 
             # remove invalid map points
             rgb = rgb[:, sc_vis_mask.cpu()]
             xyz = pred_scene_coords_B4N[0, :3, sc_vis_mask].cpu()
+            # rgb = rgb[:, :]
+            # xyz = pred_scene_coords_B4N[0, :3, :].cpu()
 
             # sub-sample if necessary
             if xyz.shape[1] > avg_pc_points:
