@@ -2,8 +2,10 @@ import logging
 import math
 import random
 from pathlib import Path
+import shutil
 
 import cv2
+from PIL import Image, ImageOps
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -107,6 +109,12 @@ class CamLocDataset(Dataset):
         rgb_dir = root_dir / 'rgb'
         pose_dir = root_dir / 'poses'
         calibration_dir = root_dir / 'calibration'
+        # feature_dir = root_dir / 'feature'
+
+        # ctr: reset the features' folder
+        # if feature_dir.exists():
+        #     shutil.rmtree(feature_dir)
+        # else: feature_dir.mkdir(mode=777)
 
         # Optional folders. Unused in ACE.
         if self.eye:
@@ -124,6 +132,9 @@ class CamLocDataset(Dataset):
 
         # Load camera calibrations. One focal length per image.
         self.calibration_files = sorted(calibration_dir.iterdir())
+
+        # Find all extracted features by encoder.
+        # self.feature_files = sorted(feature_dir.iterdir())
 
         if self.init or self.eye:
             # Load GT scene coordinates.
@@ -160,6 +171,7 @@ class CamLocDataset(Dataset):
                     std=[0.25]
                 ),
             ])
+
         else:
             self.image_transform = transforms.Compose([
                 # transforms.ToPILImage(),
@@ -385,6 +397,26 @@ class CamLocDataset(Dataset):
 
         # Rescale image.
         image = self._resize_image(image, image_height)
+        if not self.augment and image.size[0] % 8 > 0:
+            cut_size = (0,0,image.size[0]//8*8,image_height)
+            image = image.crop(cut_size)
+        
+        # # CLAHE
+        # numpy_rgb = np.array(image)
+        # numpy_gray = 0.299 * numpy_rgb[:, :, 0] + 0.587 * numpy_rgb[:, :, 1] + 0.114 * numpy_rgb[:, :, 2]
+        # clahe = cv2.createCLAHE(tileGridSize=(5,5))
+        # img_clahe = clahe.apply(numpy_gray.astype(np.uint8))
+        # image = Image.fromarray(img_clahe)
+
+        numpy_rgb = np.array(image)
+        # use rgb image
+        image_rgb = torch.from_numpy(numpy_rgb / 255.0)
+        
+        # use gray image
+        # numpy_gray = 0.299 * numpy_rgb[:, :, 0] + 0.587 * numpy_rgb[:, :, 1] + 0.114 * numpy_rgb[:, :, 2]
+        # numpy_gray_3channel = np.stack((numpy_gray,) * 3, axis=-1)
+        # image_rgb = torch.from_numpy(np.uint8(numpy_gray_3channel) / 255.0)
+
 
         # Create mask of the same size as the resized image (it's a PIL image at this point).
         image_mask = torch.ones((1, image.size[1], image.size[0]))
@@ -515,7 +547,7 @@ class CamLocDataset(Dataset):
         # Also need the inverse.
         intrinsics_inv = intrinsics.inverse()
 
-        return image, image_mask, pose, pose_inv, intrinsics, intrinsics_inv, coords, str(self.rgb_files[idx])
+        return image_rgb, image, image_mask, pose, pose_inv, intrinsics, intrinsics_inv, coords, str(self.rgb_files[idx])
 
     def __len__(self):
         return len(self.valid_file_indices)
